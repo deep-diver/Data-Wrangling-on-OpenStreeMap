@@ -27,7 +27,7 @@ PROBLEMCHARS = re.compile(r'[=\+\/\&\<\>\;\'\"\?\%\#\$\@\,\. \t\r\n]')
 STREET_TYPES = re.compile(r'\b\S+\.?$', re.IGNORECASE)
 
 EXPECTED_STREET_TYPES = ["Street", "Avenue", "Boulevard", "Drive", "Court", "Place", "Square", "Lane", "Road", "Trail", "Parkway", "Commons"]
-STREE_TYPE_MAPPINGS = { "St"    :  "Street",
+STREET_TYPE_MAPPINGS = { "St"    :  "Street",
                         "St."   :  "Street",
                         "Rd"    :  "Road",
                         "Rd."   :  "Road",
@@ -42,8 +42,48 @@ WAY_FIELDS = ['id', 'user', 'uid', 'version', 'changeset', 'timestamp']
 WAY_TAGS_FIELDS = ['id', 'key', 'value', 'type']
 WAY_NODES_FIELDS = ['id', 'node_id', 'position']
 
+
+# Begin of auditing
+
 def is_street_name(elem):
     return (elem.attrib['k'] == "addr:street")
+
+def update_name(name, mapping):
+      m = street_type_re.search(name)
+
+      if m:
+            street_type = m.group()
+            if street_type not in expected:
+                  name = re.sub(street_type, mapping[street_type], name)
+
+      return name
+
+def audit_street_type(street_types, street_name):
+      m = street_type_re.search(street_name)
+      if m:
+            street_type = m.group()
+
+            if street_type not in expected:
+                  street_types[street_type].add(street_name)
+
+def audit_street_name(filename):
+      street_types = defaultdict(set)
+
+      for event, elem in ET.iterparse(filename, events=("start",)):
+            if elem.tag == "node" or elem.tag == "way":
+                  for tag in elem.iter("tag"):
+                        if is_street_name(tag):
+                              audit_street_type(street_types, tag.attrib['v'])
+
+      return street_types
+
+def audit():
+      audit_street_name()
+
+
+# End of auditing
+
+# Begin of shaping
 
 def shape_tag_element(tag_element, ref_id):
       tag_attribs = {}
@@ -59,14 +99,18 @@ def shape_tag_element(tag_element, ref_id):
             key_type = key_match.group(1)
             key_index = (key.index(key_type) + len(key_type))+1         #key[key_index:]
 
-            tag_attribs['key'] = key[key_index:]
+            tag_attribs['key'] = key[key_index: ]
             tag_attribs['type'] = key_type
       else:
             tag_attribs['key'] = key
             tag_attribs['type'] = 'regular'
 
       tag_attribs['id'] = ref_id
-      tag_attribs['value'] = value
+
+      if is_street_name(tag_element):
+            tag_attribs['value'] = update_name(value, STREET_TYPE_MAPPINGS)
+      else:
+            tag_attribs['value'] = value
 
       return tag_attribs
 
@@ -224,6 +268,7 @@ def main():
             generate_sample()
 
       if os.path.exists(SAMPLE_FILE):
+            audit_map(SAMPLE_FILE)
             process_map(SAMPLE_FILE, validate = False)
 
 if __name__== "__main__":
