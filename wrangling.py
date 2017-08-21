@@ -9,10 +9,10 @@ import cerberus
 
 import schema
 
-OSM_FILE = "seoul_south-korea.osm"  
+OSM_FILE = "singapore.osm"  
 
 # Sample generation related
-SAMPLE_FILE = "sample.osm"
+SAMPLE_FILE = "singapore_sample.osm"
 k = 100 # Parameter: take every k-th top level element
 
 # CSV file paths
@@ -49,21 +49,21 @@ def is_street_name(elem):
     return (elem.attrib['k'] == "addr:street")
 
 def update_name(name, mapping):
-      m = street_type_re.search(name)
+      m = STREET_TYPES.search(name)
 
       if m:
             street_type = m.group()
-            if street_type not in expected:
+            if street_type not in EXPECTED_STREET_TYPES:
                   name = re.sub(street_type, mapping[street_type], name)
 
       return name
 
 def audit_street_type(street_types, street_name):
-      m = street_type_re.search(street_name)
+      m = STREET_TYPES.search(street_name)
       if m:
             street_type = m.group()
 
-            if street_type not in expected:
+            if street_type not in EXPECTED_STREET_TYPES:
                   street_types[street_type].add(street_name)
 
 def audit_street_name(filename):
@@ -77,8 +77,8 @@ def audit_street_name(filename):
 
       return street_types
 
-def audit():
-      audit_street_name()
+def audit(filename):
+      audit_street_name(filename)
 
 
 # End of auditing
@@ -268,7 +268,7 @@ def main():
             generate_sample()
 
       if os.path.exists(SAMPLE_FILE):
-            audit_map(SAMPLE_FILE)
+            audit(SAMPLE_FILE)
             process_map(SAMPLE_FILE, validate = False)
 
 if __name__== "__main__":
