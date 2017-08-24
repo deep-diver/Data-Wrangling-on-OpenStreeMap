@@ -1,6 +1,7 @@
 import os
 import csv
 import codecs
+import pprint
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 import re
@@ -9,11 +10,11 @@ import cerberus
 
 import schema
 
-OSM_FILE = "singapore.osm"  
+OSM_FILE = "seattle_washington.osm"  
 
 # Sample generation related
-SAMPLE_FILE = "singapore_sample.osm"
-k = 100 # Parameter: take every k-th top level element
+SAMPLE_FILE = "seattle_washington_sample.osm"
+k = 400 # Parameter: take every k-th top level element
 
 # CSV file paths
 NODES_PATH = "nodes.csv"
@@ -25,13 +26,19 @@ WAY_TAGS_PATH = "ways_tags.csv"
 LOWER_COLON = re.compile(r'^([a-z|_]+)+:([a-z|_]+)+')
 PROBLEMCHARS = re.compile(r'[=\+\/\&\<\>\;\'\"\?\%\#\$\@\,\. \t\r\n]')
 STREET_TYPES = re.compile(r'\b\S+\.?$', re.IGNORECASE)
+POSTCODE_TYPE = re.compile(r'\d{5}', re.IGNORECASE)
 
-EXPECTED_STREET_TYPES = ["Street", "Avenue", "Boulevard", "Drive", "Court", "Place", "Square", "Lane", "Road", "Trail", "Parkway", "Commons"]
+EXPECTED_STREET_TYPES = ["Street", "Avenue", "Boulevard", "Drive", "Court", "Place", 
+                         "Square", "Lane", "Road", "Trail", "Parkway", "Commons"]
 STREET_TYPE_MAPPINGS = { "St"    :  "Street",
-                        "St."   :  "Street",
-                        "Rd"    :  "Road",
-                        "Rd."   :  "Road",
-                        "Ave"   :  "Avenue"}
+                         "St."   :  "Street",
+                         "Rd"    :  "Road",
+                         "Rd."   :  "Road",
+                         "Ave"   :  "Avenue",
+                         "SW"    :  "Southwest",
+                         "NW"    :  "Northwest",
+                         "SE"    :  "Southeast",
+                         "NE"    :  "Northeast"}
 
 SCHEMA = schema.Schema
 
@@ -49,6 +56,8 @@ def is_street_name(elem):
     return (elem.attrib['k'] == "addr:street")
 
 def update_name(name, mapping):
+      print 'update name: {}'.format(name)
+
       m = STREET_TYPES.search(name)
 
       if m:
@@ -77,9 +86,68 @@ def audit_street_name(filename):
 
       return street_types
 
-def audit(filename):
-      audit_street_name(filename)
+def audit_speed(filename):
+      speed_types = []
 
+      for event, elem in ET.iterparse(filename, events=("start",)):
+            if elem.tag == "node" or elem.tag == "way":
+                  for tag in elem.iter("tag"):
+                        key = tag.attrib['k']
+                        if key == 'maxspeed' or key == 'minspeed':
+                              speed_types.append(tag.attrib['v'])
+
+      return speed_types
+
+def audit_postcode(filename):
+      post_codes = []
+
+      for event, elem in ET.iterparse(filename, events=("start",)):
+            if elem.tag == "node" or elem.tag =="way":
+                  for tag in elem.iter("tag"):
+                        key = tag.attrib['k']
+
+                        if key == 'addr:postcode' or key == 'postal_code':
+                              m = POSTCODE_TYPE.search(tag.attrib['v'])
+                              if not m:
+                                    post_codes.append(tag.attrib['v'])
+
+      return post_codes
+
+def audit_phone(filename):
+      phones = set()
+
+      for event, elem in ET.iterparse(filename, events=('start',)):
+            if elem.tag == "node" or elem.tag == "way":
+                  for tag in elem.iter("tag"):
+                        if tag.attrib['k'] == 'phone':
+                              phone_num = tag.attrib['v']
+                              phone_num = re.sub(r'[\+\(\)\-\s]', '', phone_num)
+                              phones.add(len(phone_num))
+
+      return phones
+
+def audit(filename):
+      street_types = audit_street_name(filename)
+
+      print 'street type audit begins...'
+      for key, value in street_types.iteritems():
+            print '{}'.format(key)
+      print 'street type audit ends...'
+
+      print 'speed audit begins...'
+      speed_types = audit_speed(filename)
+      print '{}'.format(speed_types)
+      print 'speed audit ends...'
+
+      print 'tiger audit begins...'
+      post_codes = audit_postcode(filename)
+      print '{}'.format(post_codes)
+      print 'tiger audit ends...'
+
+      print 'phone audit begins...'
+      phone = audit_phone(filename)
+      print '{}'.format(phone)
+      print 'phone audit ends...'
 
 # End of auditing
 
@@ -107,10 +175,10 @@ def shape_tag_element(tag_element, ref_id):
 
       tag_attribs['id'] = ref_id
 
-      if is_street_name(tag_element):
-            tag_attribs['value'] = update_name(value, STREET_TYPE_MAPPINGS)
-      else:
-            tag_attribs['value'] = value
+      # if is_street_name(tag_element):
+      #       tag_attribs['value'] = update_name(value, STREET_TYPE_MAPPINGS)
+      # else:
+      tag_attribs['value'] = value
 
       return tag_attribs
 
@@ -269,7 +337,7 @@ def main():
 
       if os.path.exists(SAMPLE_FILE):
             audit(SAMPLE_FILE)
-            process_map(SAMPLE_FILE, validate = False)
+            # process_map(SAMPLE_FILE, validate = False)
 
 if __name__== "__main__":
   main()
