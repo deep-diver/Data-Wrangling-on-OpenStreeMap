@@ -22,3 +22,8 @@
   - mapzen provides pre-generated dataset for popular areas.
  - why seattle?
   - just for my interesting since I have spent an year as an exchange student at UW in 2011.
+
+## Reference Sites
+- Open Stree Map (https://www.openstreetmap.org)
+- Mapzen (https://mapzen.com/data/metro-extracts/)
+- Open Street Map Wiki (https://wiki.openstreetmap.org)
