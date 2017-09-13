@@ -1,35 +1,33 @@
 import os
+import re
 import csv
+import schema
 import codecs
-import pprint
+import cerberus
 import xml.etree.ElementTree as ET
 from collections import defaultdict
-import re
 
-import cerberus
-
-import schema
+SCHEMA = schema.Schema
 
 OSM_FILE = "seattle_washington.osm"  
+SAMPLE_FILE = "seattle_washington_sample_500.osm"
 
-# Sample generation related
-SAMPLE_FILE = "seattle_washington_sample.osm"
-k = 400 # Parameter: take every k-th top level element
-
-# CSV file paths
 NODES_PATH = "nodes.csv"
 NODE_TAGS_PATH = "nodes_tags.csv"
 WAYS_PATH = "ways.csv"
 WAY_NODES_PATH = "ways_nodes.csv"
 WAY_TAGS_PATH = "ways_tags.csv"
 
-LOWER_COLON = re.compile(r'^([a-z|_]+)+:([a-z|_]+)+')
+STREET_TYPES_RE = re.compile(r'\b\S+\.?$', re.IGNORECASE)
 PROBLEMCHARS = re.compile(r'[=\+\/\&\<\>\;\'\"\?\%\#\$\@\,\. \t\r\n]')
-STREET_TYPES = re.compile(r'\b\S+\.?$', re.IGNORECASE)
-POSTCODE_TYPE = re.compile(r'\d{5}', re.IGNORECASE)
+LOWER_COLON = re.compile(r'^([a-z|_]+)+:([a-z|_]+)+')
 
-EXPECTED_STREET_TYPES = ["Street", "Avenue", "Boulevard", "Drive", "Court", "Place", 
-                         "Square", "Lane", "Road", "Trail", "Parkway", "Commons"]
+NODE_FIELDS = ['id', 'lat', 'lon', 'user', 'uid', 'version', 'changeset', 'timestamp']
+NODE_TAGS_FIELDS = ['id', 'key', 'value', 'type']
+WAY_FIELDS = ['id', 'user', 'uid', 'version', 'changeset', 'timestamp']
+WAY_TAGS_FIELDS = ['id', 'key', 'value', 'type']
+WAY_NODES_FIELDS = ['id', 'node_id', 'position']
+
 STREET_TYPE_MAPPINGS = { "St"    :  "Street",
                          "St."   :  "Street",
                          "Rd"    :  "Road",
@@ -38,53 +36,10 @@ STREET_TYPE_MAPPINGS = { "St"    :  "Street",
                          "SW"    :  "Southwest",
                          "NW"    :  "Northwest",
                          "SE"    :  "Southeast",
-                         "NE"    :  "Northeast"}
-
-SCHEMA = schema.Schema
-
-# Attributes for each tag
-NODE_FIELDS = ['id', 'lat', 'lon', 'user', 'uid', 'version', 'changeset', 'timestamp']
-NODE_TAGS_FIELDS = ['id', 'key', 'value', 'type']
-WAY_FIELDS = ['id', 'user', 'uid', 'version', 'changeset', 'timestamp']
-WAY_TAGS_FIELDS = ['id', 'key', 'value', 'type']
-WAY_NODES_FIELDS = ['id', 'node_id', 'position']
-
-
-# Begin of auditing
-
-def is_street_name(elem):
-    return (elem.attrib['k'] == "addr:street")
-
-def update_name(name, mapping):
-      print 'update name: {}'.format(name)
-
-      m = STREET_TYPES.search(name)
-
-      if m:
-            street_type = m.group()
-            if street_type not in EXPECTED_STREET_TYPES:
-                  name = re.sub(street_type, mapping[street_type], name)
-
-      return name
-
-def audit_street_type(street_types, street_name):
-      m = STREET_TYPES.search(street_name)
-      if m:
-            street_type = m.group()
-
-            if street_type not in EXPECTED_STREET_TYPES:
-                  street_types[street_type].add(street_name)
-
-def audit_street_name(filename):
-      street_types = defaultdict(set)
-
-      for event, elem in ET.iterparse(filename, events=("start",)):
-            if elem.tag == "node" or elem.tag == "way":
-                  for tag in elem.iter("tag"):
-                        if is_street_name(tag):
-                              audit_street_type(street_types, tag.attrib['v'])
-
-      return street_types
+                         "NE"    :  "Northeast",
+                         "S."    :  "South",
+                         "N."    :  "North",
+                         "WY"    :  "Way"}
 
 def audit_speed(filename):
       speed_types = []
@@ -98,151 +53,225 @@ def audit_speed(filename):
 
       return speed_types
 
-def audit_postcode(filename):
-      post_codes = []
-
-      for event, elem in ET.iterparse(filename, events=("start",)):
-            if elem.tag == "node" or elem.tag =="way":
-                  for tag in elem.iter("tag"):
-                        key = tag.attrib['k']
-
-                        if key == 'addr:postcode' or key == 'postal_code':
-                              m = POSTCODE_TYPE.search(tag.attrib['v'])
-                              if not m:
-                                    post_codes.append(tag.attrib['v'])
-
-      return post_codes
+def update_speed_unit(value):
+    if value.find('mph') > -1:
+        return value
+    else:
+        value = '{} mph'.format(value)
+        return value
 
 def audit_phone(filename):
-      phones = set()
+    phone_len = defaultdict(list)
 
-      for event, elem in ET.iterparse(filename, events=('start',)):
-            if elem.tag == "node" or elem.tag == "way":
-                  for tag in elem.iter("tag"):
-                        if tag.attrib['k'] == 'phone':
-                              phone_num = tag.attrib['v']
-                              phone_num = re.sub(r'[\+\(\)\-\s]', '', phone_num)
-                              phones.add(len(phone_num))
+    for event, elem in ET.iterparse(filename, events=("start",)):
+        if elem.tag == "node" or elem.tag == "way":
+            for tag in elem.iter("tag"):
+                key = tag.attrib['k']
+                if key == 'phone':
+                    phone_num = re.sub(r'[\+\(\)\-\s]', '', tag.attrib['v'])
+                    phone_len[len(phone_num)].append(tag.attrib['v'])
 
-      return phones
+    return phone_len
 
-def audit(filename):
-      street_types = audit_street_name(filename)
-
-      print 'street type audit begins...'
-      for key, value in street_types.iteritems():
-            print '{}'.format(key)
-      print 'street type audit ends...'
-
-      print 'speed audit begins...'
-      speed_types = audit_speed(filename)
-      print '{}'.format(speed_types)
-      print 'speed audit ends...'
-
-      print 'tiger audit begins...'
-      post_codes = audit_postcode(filename)
-      print '{}'.format(post_codes)
-      print 'tiger audit ends...'
-
-      print 'phone audit begins...'
-      phone = audit_phone(filename)
-      print '{}'.format(phone)
-      print 'phone audit ends...'
-
-# End of auditing
-
-# Begin of shaping
-
-def shape_tag_element(tag_element, ref_id):
-      tag_attribs = {}
-
-      key = tag_element.attrib['k']
-      value = tag_element.attrib['v']
-
-      if re.search(PROBLEMCHARS, key):
+def update_phone(phone_num):
+    phone_num = re.sub(r'[\+\(\)\-\s]', '', phone_num)
+    
+    if len(phone_num) != 10 and \
+       len(phone_num) != 11:
             return None
+    
+    if len(phone_num) == 10:
+        phone_num = '1{}'.format(phone_num)
+    
+    phone_num_parts = []
+    phone_num_parts.append('+')
+    phone_num_parts.append(phone_num[:1])
+    phone_num_parts.append(' ')
+    phone_num_parts.append(phone_num[1:4])
+    phone_num_parts.append('-')
+    phone_num_parts.append(phone_num[4:7])
+    phone_num_parts.append('-')
+    phone_num_parts.append(phone_num[7:])
+    
+    return ''.join(phone_num_parts)
 
-      key_match = re.search(LOWER_COLON, key)
-      if key_match:
-            key_type = key_match.group(1)
-            key_index = (key.index(key_type) + len(key_type))+1         #key[key_index:]
+def audit_street_name(filename):
+    street_types = defaultdict(set)
 
-            tag_attribs['key'] = key[key_index: ]
-            tag_attribs['type'] = key_type
-      else:
-            tag_attribs['key'] = key
-            tag_attribs['type'] = 'regular'
+    for event, elem in ET.iterparse(filename, events=("start",)):
+        if elem.tag == "node" or elem.tag == "way":
+            for tag in elem.iter("tag"):
+                key = tag.attrib['k']
+                if key == "addr:street":
+                    street_name = tag.attrib['v']
+                    match = STREET_TYPES_RE.search(street_name)
+                    if match:
+                        street_type = match.group()
+                        street_types[street_type].add(street_name)
 
-      tag_attribs['id'] = ref_id
+    return street_types
 
-      # if is_street_name(tag_element):
-      #       tag_attribs['value'] = update_name(value, STREET_TYPE_MAPPINGS)
-      # else:
-      tag_attribs['value'] = value
+def update_street_name(name):
+    m = STREET_TYPES_RE.search(name)
 
-      return tag_attribs
+    if m:
+        street_type = m.group()
+        
+        try:
+            name = re.sub(street_type, STREET_TYPE_MAPPINGS[street_type], name)
+            return name
+        except KeyError as e:
+            return name
+
+def shape_tag_element(tag_element, ref_id, default_tag_type):
+    tag_attribs = {}
+
+    key = tag_element.attrib['k']
+    value = tag_element.attrib['v']
+
+    if re.search(PROBLEMCHARS, key):
+        return None
+
+    key_match = re.search(LOWER_COLON, key)
+    if key_match:
+        key_type = key_match.group(1)
+        key_index = (key.index(key_type) + len(key_type))+1         
+
+        tag_attribs['key'] = key[key_index: ]
+        tag_attribs['type'] = key_type
+    else:
+        tag_attribs['key'] = key
+        tag_attribs['type'] = default_tag_type
+
+    tag_attribs['id'] = ref_id
+
+    '''
+    this is where tag value update will happen
+    '''
+    if tag_attribs['key'] == 'maxspeed' or tag_attribs['key'] == 'minspeed':
+        value = update_speed_unit(value)
+    elif tag_attribs['key'] == 'phone':
+        value = update_phone(value)
+    elif tag_attribs['key'] == 'street':
+        value = update_street_name(value)
+        
+    if value == None:
+        return None
+    
+    tag_attribs['value'] = value
+
+    return tag_attribs
+
+def shape_tag_elements(tags, parent_element, default_tag_type):
+    for tag_element in parent_element.iter('tag'):
+        tag_attribs = shape_tag_element(tag_element, \
+                                        parent_element.attrib['id'], \
+                                        default_tag_type)
+
+        if tag_attribs != None:
+            tags.append(tag_attribs)
+
+def shape_common_for_node_and_way(common_attribs, element):
+    common_attribs['id'] = int(element.attrib['id'])
+    common_attribs['uid'] = int(element.attrib['uid'])
+    common_attribs['changeset'] = int(element.attrib['changeset'])
+    common_attribs['user'] = element.attrib['user']
+    common_attribs['version'] = element.attrib['version']
+    common_attribs['timestamp'] = element.attrib['timestamp']
 
 def shape_nd_element(nd_element, ref_id, position):
-      nd_attribs = {}
+    nd_attribs = {}
 
-      nd_attribs['id'] = ref_id
-      nd_attribs['node_id'] = nd_element.attrib['ref']
-      nd_attribs['position'] = position
+    nd_attribs['id'] = ref_id
+    nd_attribs['node_id'] = nd_element.attrib['ref']
+    nd_attribs['position'] = position
 
-      return nd_attribs 
+    return nd_attribs 
 
-def shape_element(element, node_attr_fields=NODE_FIELDS, way_attr_fields=WAY_FIELDS,
-                  problem_chars=PROBLEMCHARS, default_tag_type='regular'):
-      node_attribs = {}
-      way_attribs = {}
-      way_nodes = []
-      tags = []  # Handle secondary tags the same way for both node and way elements
+def shape_element(element, key_error_count, problem_chars=PROBLEMCHARS, default_tag_type='regular'):
+    node_attribs = {}
+    way_attribs = {}
+    way_nodes = []
+    tags = []
 
-      if element.tag == 'node':
-            node_id = element.attrib['id']
-
-            node_attribs['id'] = int(element.attrib['id'])
-            node_attribs['uid'] = int(element.attrib['uid'])
-            node_attribs['changeset'] = int(element.attrib['changeset'])
+    if element.tag == 'node':
+        try:
+            shape_common_for_node_and_way(node_attribs, element)
             node_attribs['lat'] = float(element.attrib['lat'])
             node_attribs['lon'] = float(element.attrib['lon'])
-            node_attribs['user'] = element.attrib['user']
-            node_attribs['version'] = element.attrib['version']
-            node_attribs['timestamp'] = element.attrib['timestamp']
 
-            for tag_element in element.iter('tag'):
-                  tag_attribs = shape_tag_element(tag_element, node_id)
-
-                  if tag_attribs != None:
-                        tags.append(tag_attribs)
-
+            shape_tag_elements(tags, element, default_tag_type)
             return {'node': node_attribs, 'node_tags': tags}
-      elif element.tag == 'way':
-            # WAY_FIELDS = ['id', 'user', 'uid', 'version', 'changeset', 'timestamp']
-            way_id = int(element.attrib['id'])
-
-            way_attribs['id'] = int(element.attrib['id'])
-            way_attribs['uid'] = int(element.attrib['uid'])
-            way_attribs['changeset'] = int(element.attrib['changeset'])
-            way_attribs['user'] = element.attrib['user']
-            way_attribs['version'] = element.attrib['version']
-            way_attribs['timestamp'] = element.attrib['timestamp']
+        except KeyError as e:
+            key_error_count += 1
+    
+    elif element.tag == 'way':
+        try:
+            shape_common_for_node_and_way(way_attribs, element)
+            shape_tag_elements(tags, element, default_tag_type)
 
             nd_position = 0
             for nd_element in element.iter('nd'):
-                  nd_attribs = shape_nd_element(nd_element, way_id, nd_position)
-                  way_nodes.append(nd_attribs)
-
-                  nd_position += 1
-
-            for tag_element in element.iter('tag'):
-                  tag_attribs = shape_tag_element(tag_element, way_id)
-
-                  if tag_attribs != None:
-                        tags.append(tag_attribs)
+                nd_attribs = shape_nd_element(nd_element, \
+                                              int(element.attrib['id']), \
+                                              nd_position)
+                way_nodes.append(nd_attribs)
+                nd_position += 1
 
             return {'way': way_attribs, 'way_nodes': way_nodes, 'way_tags': tags}
+        except KeyError as e:
+            key_error_count += 1
 
+class UnicodeDictWriter(csv.DictWriter, object):
+    """Extend csv.DictWriter to handle Unicode input"""
+
+    def writerow(self, row):
+        super(UnicodeDictWriter, self).writerow({
+            k: (v.encode('utf-8') if isinstance(v, unicode) else v) for k, v in row.iteritems()
+        })
+
+    def writerows(self, rows):
+        for row in rows:
+            self.writerow(row)
+
+def get_element(osm_file, tags=('node', 'way', 'relation')):
+    """Yield element if it is the right type of tag"""
+
+    context = ET.iterparse(osm_file, events=('start', 'end'))
+    _, root = next(context)
+    for event, elem in context:
+        if event == 'end' and elem.tag in tags:
+            yield elem
+            root.clear()
+
+def process_map(file_in):
+    with codecs.open(NODES_PATH, 'w') as nodes_file, \
+         codecs.open(NODE_TAGS_PATH, 'w') as nodes_tags_file, \
+         codecs.open(WAYS_PATH, 'w') as ways_file, \
+         codecs.open(WAY_NODES_PATH, 'w') as way_nodes_file, \
+         codecs.open(WAY_TAGS_PATH, 'w') as way_tags_file:
+
+        nodes_writer = UnicodeDictWriter(nodes_file, NODE_FIELDS)
+        node_tags_writer = UnicodeDictWriter(nodes_tags_file, NODE_TAGS_FIELDS)
+        ways_writer = UnicodeDictWriter(ways_file, WAY_FIELDS)
+        way_nodes_writer = UnicodeDictWriter(way_nodes_file, WAY_NODES_FIELDS)
+        way_tags_writer = UnicodeDictWriter(way_tags_file, WAY_TAGS_FIELDS)
+
+        validator = cerberus.Validator()
+        key_error_count = 0
+
+        for element in get_element(file_in, tags=('node', 'way')):
+            el = shape_element(element, key_error_count)
+            if el:
+                if element.tag == 'node':
+                    nodes_writer.writerow(el['node'])
+                    node_tags_writer.writerows(el['node_tags'])
+                elif element.tag == 'way':
+                    ways_writer.writerow(el['way'])
+                    way_nodes_writer.writerows(el['way_nodes'])
+                    way_tags_writer.writerows(el['way_tags'])
+        
+        print 'number of node or way element that encountered KeyError {}'.format(key_error_count)
 
 def get_element(osm_file, tags=('node', 'way', 'relation')):
     context = iter(ET.iterparse(osm_file, events=('start', 'end')))
@@ -264,80 +293,13 @@ def generate_sample():
 
       output.write('</osm>')
 
-def get_element(osm_file, tags=('node', 'way', 'relation')):
-    """Yield element if it is the right type of tag"""
-
-    context = ET.iterparse(osm_file, events=('start', 'end'))
-    _, root = next(context)
-    for event, elem in context:
-        if event == 'end' and elem.tag in tags:
-            yield elem
-            root.clear()
-
-
-def validate_element(element, validator, schema=SCHEMA):
-    """Raise ValidationError if element does not match schema"""
-    if validator.validate(element, schema) is not True:
-        field, errors = next(validator.errors.iteritems())
-        message_string = "\nElement of type '{0}' has the following errors:\n{1}"
-        error_string = pprint.pformat(errors)
-        
-        raise Exception(message_string.format(field, error_string))
-
-class UnicodeDictWriter(csv.DictWriter, object):
-    """Extend csv.DictWriter to handle Unicode input"""
-
-    def writerow(self, row):
-        super(UnicodeDictWriter, self).writerow({
-            k: (v.encode('utf-8') if isinstance(v, unicode) else v) for k, v in row.iteritems()
-        })
-
-    def writerows(self, rows):
-        for row in rows:
-            self.writerow(row)
-
-def process_map(file_in, validate):
-    with codecs.open(NODES_PATH, 'w') as nodes_file, \
-         codecs.open(NODE_TAGS_PATH, 'w') as nodes_tags_file, \
-         codecs.open(WAYS_PATH, 'w') as ways_file, \
-         codecs.open(WAY_NODES_PATH, 'w') as way_nodes_file, \
-         codecs.open(WAY_TAGS_PATH, 'w') as way_tags_file:
-
-        nodes_writer = UnicodeDictWriter(nodes_file, NODE_FIELDS)
-        node_tags_writer = UnicodeDictWriter(nodes_tags_file, NODE_TAGS_FIELDS)
-        ways_writer = UnicodeDictWriter(ways_file, WAY_FIELDS)
-        way_nodes_writer = UnicodeDictWriter(way_nodes_file, WAY_NODES_FIELDS)
-        way_tags_writer = UnicodeDictWriter(way_tags_file, WAY_TAGS_FIELDS)
-
-        nodes_writer.writeheader()
-        node_tags_writer.writeheader()
-        ways_writer.writeheader()
-        way_nodes_writer.writeheader()
-        way_tags_writer.writeheader()
-
-        validator = cerberus.Validator()
-
-        for element in get_element(file_in, tags=('node', 'way')):
-            el = shape_element(element)
-            if el:
-                if validate is True:
-                    validate_element(el, validator)
-
-                if element.tag == 'node':
-                    nodes_writer.writerow(el['node'])
-                    node_tags_writer.writerows(el['node_tags'])
-                elif element.tag == 'way':
-                    ways_writer.writerow(el['way'])
-                    way_nodes_writer.writerows(el['way_nodes'])
-                    way_tags_writer.writerows(el['way_tags'])
-
 def main():
+      # generate sample file
       if not os.path.exists(SAMPLE_FILE):
-            generate_sample()
+         generate_sample() 
 
-      if os.path.exists(SAMPLE_FILE):
-            audit(SAMPLE_FILE)
-            # process_map(SAMPLE_FILE, validate = False)
+      if os.path.exists(OSM_FILE):
+            process_map(OSM_FILE)
 
 if __name__== "__main__":
   main()
