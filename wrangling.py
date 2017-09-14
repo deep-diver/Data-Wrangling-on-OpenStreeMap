@@ -288,8 +288,8 @@ def main():
       if not os.path.exists(SAMPLE_FILE):
             generate_sample() 
 
-      if os.path.exists(SAMPLE_FILE):
-            process_map(SAMPLE_FILE)
+      if os.path.exists(OSM_FILE):
+            process_map(OSM_FILE)
 
 if __name__== "__main__":
       main()      
